@@ -34,8 +34,11 @@ import { BodyPart, Flag } from "arena";
 import { Creep, RoomObject, StructureTower } from "game/prototypes";
 import { getDirection, getDistance, getObjectsByPrototype, getRange, getTime } from "game/utils";
 import { searchPath } from "game/path-finder";
-import { Game } from "../../test/unit/mock";
-import { sign } from "crypto";
+
+/*
+TODO
+loss due to units not concentrated when moving to rally - break into squads
+*/
 
 declare module "game/prototypes" {
   interface Creep {
@@ -58,6 +61,7 @@ let isEnemyOutOfRangedUnits: boolean = false;
 let corner: number; //the corner of avail able square eg 9 or 81 for (9,9) or (81,81)
 let firstrally: { x: number; y: number }; //enemy side of map
 let rally: { x: number; y: number };
+let atkTime = 1700;
 // This is the only exported function from the main module. It is called every tick.
 export function loop(): void {
   // We assign global variables here. They will be accessible throughout the tick, and even on the following ticks too.
@@ -68,14 +72,15 @@ export function loop(): void {
   enemyFlag = getObjectsByPrototype(Flag).find(i => !i.my)!;
   myFlag = getObjectsByPrototype(Flag).find(i => i.my)!;
   myTower = getObjectsByPrototype(StructureTower).find(i => i.my)!;
-  isEnemyOutOfRangedUnits = enemyCreeps.filter(e => e.body.some(i => i.type === RANGED_ATTACK)).length <= 0;
+  isEnemyOutOfRangedUnits =
+    enemyCreeps.filter(e => e.body.some(i => i.type === RANGED_ATTACK && i.hits > 0)).length <= 0;
 
   if (myTower) {
     let clo: Creep | undefined = myTower.findClosestByRange(enemyCreeps);
     let mine: Creep | undefined = myTower.findClosestByRange(myCreeps);
 
     //let isHalfEnergy = myTower.store.energy > myTower.store.getCapacity() / 2;
-    if (clo /*&&isHalfEnergy*/) {
+    if (clo && getDistance(clo, myTower) <= 12) {
       myTower.attack(clo);
     }
     //doesnt work because towers dont have .pos????????
@@ -84,7 +89,6 @@ export function loop(): void {
     //   myTower.attack(clo);
     // }
     else if (mine && isEnemyOutOfRangedUnits) {
-      console.log(`heal: ${mine.id}`);
       myTower.heal(mine);
     }
   }
@@ -102,15 +106,13 @@ export function loop(): void {
   //if at least half creeps at rally with FULL HEALTH
   //or the enemy is out of ranged units (in case rally point is a rock)
   //or 300 ticks left in match
-  if (
-    firstrally &&
-    (myCreeps.filter(c => c.hits >= c.hitsMax && (isEnemyOutOfRangedUnits || getDistance(c, firstrally) < 2)).length >
-      myCreeps.length / 2 ||
-      getTime() > 1700)
-  ) {
+  let readyToAtk = firstrally ? myCreeps.filter(c => c.hits >= c.hitsMax && getDistance(c, firstrally) < 2).length : 0;
+  let atkUnits = (myCreeps.length - 3) / 2;//subtract melee guys and basehealer
+  if (isEnemyOutOfRangedUnits || readyToAtk > atkUnits || getTime() > atkTime) {
     rally = { x: enemyFlag.x, y: enemyFlag.y };
     console.log(`CHARGE!!!! to ${JSON.stringify(rally)} at ${getTime()}`);
   }
+  //else if (getTime() % 10 == 0) console.log(`waiting for forces: ${readyToAtk} out of ${myCreeps.length / 2} needed`);
 
   let firsthealer = myCreeps.filter(creep => creep.body.some(i => i.type === HEAL))[0];
   // Run all my creeps according to their bodies
@@ -153,47 +155,50 @@ export function loop(): void {
 
 function meleeAttacker(creep: Creep) {
   //hunt range 100 when enemy is out of guys, or when round almost over
-  let huntDistance = !isEnemyOutOfRangedUnits||getTime()>1700 ? 10 : 100;
+  let huntDistance = isEnemyOutOfRangedUnits || getTime() > atkTime - 200 ? 100 : 10;
   const targets = enemyCreeps
     .filter(i => getDistance(i, creep.initialPos) < huntDistance)
     .sort((a, b) => getDistance(a, creep) - getDistance(b, creep));
 
   let hasDefLeft = creep.body.filter(i => i.type === TOUGH && i.hits > 0).length > 1;
-  if (hasDefLeft) {
-    if (targets.length > 0) {
-      creep.moveTo(targets[0]);
-      creep.attack(targets[0]);
-    } else if (isEnemyOutOfRangedUnits && targets.length <= 0) {
-      creep.moveTo(enemyFlag);
+
+  if (hasDefLeft && targets.length > 0) {
+    creep.moveTo(targets[0]);
+    creep.attack(targets[0]);
+  } else if (hasDefLeft && huntDistance > 10) {
+    //ignore healer/melee and charge for flag
+    creep.moveTo(enemyFlag);
+  } else if (creep.hits < creep.hitsMax) {
+    if (huntDistance > 10) {
+      //no retreat
+      //move to CLOSEST healer (to get healed) if damaged at all
+      creep.moveTo(creep.findClosestByRange(myCreeps.filter(c => c.body.some(i => i.type === HEAL))));
+    } else {
+      //move to base healer
+      creep.moveTo(myCreeps.filter(c => c.isBaseHealer)[0]);
     }
-  } else {
-    //move to base healer (to get healed)
-    creep.moveTo(myCreeps.filter(c => c.isBaseHealer)[0]);
-  }
+  } else creep.moveTo(creep.initialPos);
 }
 
 function rangedAttacker(creep: Creep) {
-  const targets = enemyCreeps
-    .filter(i => i.body.some(i => i.type === RANGED_ATTACK || i.type === ATTACK || i.type === HEAL))
+  let threats = enemyCreeps
+    .filter(
+      i =>
+        getDistance(creep, i) <= 3 && i.body.some(i => i.type === RANGED_ATTACK || i.type === ATTACK || i.type === HEAL)
+    )
     .sort((a, b) => getDistance(a, creep) - getDistance(b, creep));
 
-  if (targets.length == 1) {
-    creep.rangedAttack(targets[0]);
+  //can HIT at range of 3, but threat (so can flee) evaluated at range of 4
+  if (threats.length == 1) {
+    creep.rangedAttack(threats[0]);
   } else creep.rangedMassAttack();
 
   if (creep.hits >= creep.hitsMax / 2) {
     creep.moveTo(rally);
   } else {
-    //if hurt move to my base healer
-    creep.moveTo(myCreeps.filter(c => c.isBaseHealer)[0]);
+    //if hurt move to CLOSEST healer
+    creep.moveTo(creep.findClosestByPath(myCreeps.filter(c => c.body.some(i => i.type === HEAL))));
     return;
-  }
-
-  const range = 4;
-  //const isHealerInRange = myCreeps.filter(c=>c.body.some(i => i.type === HEAL)&&getDistance(c,creep)<2).length>0;
-  const enemiesInRange = enemyCreeps.filter(i => getDistance(i, creep) < range);
-  if (enemiesInRange.length > 0) {
-    flee(creep, enemiesInRange, range);
   }
 }
 
@@ -201,7 +206,9 @@ function healer(creep: Creep) {
   //console.log(`h:${creep.id}`)
 
   if (creep.hits >= creep.hitsMax) {
-    const healTarget = myCreeps.filter(i => getRange(i, creep) <= 3&&i.hits<i.hitsMax).sort((a, b) => a.hits - b.hits)[0];
+    const healTarget = myCreeps
+      .filter(i => getRange(i, creep) <= 3 && i.hits < i.hitsMax)
+      .sort((a, b) => a.hits - b.hits)[0];
 
     if (healTarget) {
       if (getRange(healTarget, creep) === 1) {
@@ -213,8 +220,11 @@ function healer(creep: Creep) {
   } else creep.heal(creep);
 
   const range = 3;
-  const enemiesInRange = enemyCreeps.filter(i => getDistance(i, creep) < range);
-  if (enemiesInRange.length > 0) {
+  const enemiesInRange = enemyCreeps.filter(
+    i => getDistance(i, creep) < range && i.body.some(i => i.type === RANGED_ATTACK || i.type === ATTACK)
+  );
+  //only allowed to flee if not in final time
+  if (enemiesInRange.length > 0&&getTime()<atkTime) {
     flee(creep, enemiesInRange, range);
   } else {
     creep.moveTo(rally);
@@ -223,18 +233,18 @@ function healer(creep: Creep) {
 
 function flee(creep: Creep, targets: Creep[], range: number) {
   //only the ones that can hurt
-  targets = targets.filter(t => t.body.some(i => i.type === ATTACK || i.type === RANGED_ATTACK));
-  if(targets){
-  const result = searchPath(
-    creep,
-    targets.map(i => ({ pos: i, range })),
-    { flee: true }
-  );
-  if (result.path.length > 0) {
-    const direction = getDirection(result.path[0].x - creep.x, result.path[0].y - creep.y);
-    creep.move(direction);
+  targets = targets.filter(t => t.body.some(i => (i.type === ATTACK&&i.hits>0) || (i.type === RANGED_ATTACK&&i.hits>0)));
+  if (targets) {
+    const result = searchPath(
+      creep,
+      targets.map(i => ({ pos: i, range })),
+      { flee: true }
+    );
+    if (result.path.length > 0) {
+      const direction = getDirection(result.path[0].x - creep.x, result.path[0].y - creep.y);
+      creep.move(direction);
+    }
   }
-}
 }
 //stays at home to heal units
 function baseHealer(creep: Creep) {
@@ -249,9 +259,5 @@ function baseHealer(creep: Creep) {
       creep.rangedHeal(healTargets[0]);
     }
   }
-  if (!isEnemyOutOfRangedUnits) creep.moveTo(myFlag);
-  else {
-    creep.moveTo(firstrally);
-    //console.log(`moving mobile command center.... to (${firstrally.x},${firstrally.y})`);
-  }
+  creep.moveTo(myFlag);
 }
