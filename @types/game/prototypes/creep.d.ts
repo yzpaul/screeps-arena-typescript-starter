@@ -21,6 +21,8 @@ declare module "game/prototypes" {
   } from "game/constants";
   import { MoveToOpts } from "game/path-finder";
   export interface Creep extends RoomObject {
+    isBaseHealer: boolean;
+    squad: "north"|"south";
     readonly prototype: Creep;
     /**
      * The current amount of hit points of the creep.
