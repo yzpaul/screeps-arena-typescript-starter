@@ -100,12 +100,16 @@ export function loop(): void {
   // }
 
   //if at least half creeps at rally with FULL HEALTH
+  //or the enemy is out of ranged units (in case rally point is a rock)
+  //or 300 ticks left in match
   if (
     firstrally &&
-    myCreeps.filter(c => c.hits >= c.hitsMax && getDistance(c, firstrally) < 2).length > myCreeps.length / 2
+    (myCreeps.filter(c => c.hits >= c.hitsMax && (isEnemyOutOfRangedUnits || getDistance(c, firstrally) < 2)).length >
+      myCreeps.length / 2 ||
+      getTime() > 1700)
   ) {
     rally = { x: enemyFlag.x, y: enemyFlag.y };
-    console.log(`CHARGE!!!! to ${JSON.stringify(rally)}`);
+    console.log(`CHARGE!!!! to ${JSON.stringify(rally)} at ${getTime()}`);
   }
 
   let firsthealer = myCreeps.filter(creep => creep.body.some(i => i.type === HEAL))[0];
@@ -148,8 +152,8 @@ export function loop(): void {
 }
 
 function meleeAttacker(creep: Creep) {
-  //hunt range 100 duiring the "ranged unit wait" time or when enemy is out of guys
-  let huntDistance = !isEnemyOutOfRangedUnits ? 10 : 100;
+  //hunt range 100 when enemy is out of guys, or when round almost over
+  let huntDistance = !isEnemyOutOfRangedUnits||getTime()>1700 ? 10 : 100;
   const targets = enemyCreeps
     .filter(i => getDistance(i, creep.initialPos) < huntDistance)
     .sort((a, b) => getDistance(a, creep) - getDistance(b, creep));
@@ -220,6 +224,7 @@ function healer(creep: Creep) {
 function flee(creep: Creep, targets: Creep[], range: number) {
   //only the ones that can hurt
   targets = targets.filter(t => t.body.some(i => i.type === ATTACK || i.type === RANGED_ATTACK));
+  if(targets){
   const result = searchPath(
     creep,
     targets.map(i => ({ pos: i, range })),
@@ -229,6 +234,7 @@ function flee(creep: Creep, targets: Creep[], range: number) {
     const direction = getDirection(result.path[0].x - creep.x, result.path[0].y - creep.y);
     creep.move(direction);
   }
+}
 }
 //stays at home to heal units
 function baseHealer(creep: Creep) {
@@ -246,6 +252,6 @@ function baseHealer(creep: Creep) {
   if (!isEnemyOutOfRangedUnits) creep.moveTo(myFlag);
   else {
     creep.moveTo(firstrally);
-    console.log(`moving mobile command center.... to (${firstrally.x},${firstrally.y})`);
+    //console.log(`moving mobile command center.... to (${firstrally.x},${firstrally.y})`);
   }
 }
