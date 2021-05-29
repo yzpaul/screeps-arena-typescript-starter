@@ -32,9 +32,10 @@
 import { ATTACK, HEAL, RANGED_ATTACK, TOUGH } from "game/constants";
 import { BodyPart, Flag } from "arena";
 import { Creep, RoomObject, StructureTower } from "game/prototypes";
-import { getDirection, getDistance, getObjectsByPrototype, getTime } from "game/utils";
+import { getDirection, getDistance, getObjectsByPrototype, getRange, getTime } from "game/utils";
 import { searchPath } from "game/path-finder";
 import { Game } from "../../test/unit/mock";
+import { sign } from "crypto";
 
 declare module "game/prototypes" {
   interface Creep {
@@ -55,8 +56,8 @@ let myFlag: Flag;
 let myTower: StructureTower;
 let isEnemyOutOfRangedUnits: boolean = false;
 let corner: number; //the corner of avail able square eg 9 or 81 for (9,9) or (81,81)
+let firstrally: { x: number; y: number }; //enemy side of map
 let rally: { x: number; y: number };
-
 // This is the only exported function from the main module. It is called every tick.
 export function loop(): void {
   // We assign global variables here. They will be accessible throughout the tick, and even on the following ticks too.
@@ -88,14 +89,23 @@ export function loop(): void {
     }
   }
   // Notice how getTime is a global function, but not Game.time anymore
-  if (getTime() % 10 === 0) {
-    // let north = myCreeps.filter(c => c.squad === "north");
-    // let northheal = north.filter(c => c.body.some(i => i.type === HEAL));
-    // let south = myCreeps.filter(c => c.squad === "south");
-    // let southheal = south.filter(c => c.body.some(i => i.type === HEAL));
-    // console.log(
-    //   `status: ${myCreeps.length} creeps. North h:${northheal.length}/${north.length} South h:${southheal.length}/${south.length}`
-    // );
+  // if (getTime() % 10 === 0) {
+  //   let north = myCreeps.filter(c => c.squad === "north");
+  //   let northheal = north.filter(c => c.body.some(i => i.type === HEAL));
+  //   let south = myCreeps.filter(c => c.squad === "south");
+  //   let southheal = south.filter(c => c.body.some(i => i.type === HEAL));
+  //   console.log(
+  //     `status: ${myCreeps.length} creeps. North h:${northheal.length}/${north.length} South h:${southheal.length}/${south.length}`
+  //   );
+  // }
+
+  //if at least half creeps at rally with FULL HEALTH
+  if (
+    firstrally &&
+    myCreeps.filter(c => c.hits >= c.hitsMax && getDistance(c, firstrally) < 2).length > myCreeps.length / 2
+  ) {
+    rally = { x: enemyFlag.x, y: enemyFlag.y };
+    console.log(`CHARGE!!!! to ${JSON.stringify(rally)}`);
   }
 
   let firsthealer = myCreeps.filter(creep => creep.body.some(i => i.type === HEAL))[0];
@@ -107,18 +117,18 @@ export function loop(): void {
     //and it will be available during the entire match.
     if (!creep.initialPos) {
       creep.initialPos = { x: creep.x, y: creep.y };
-      //top of map
       if (myTower!.x == 4) {
         creep.squad = creep.x == myTower!.x + 4 ? "north" : "south";
         corner = 8;
-        rally = { x: 56, y: 72 };
+        firstrally = { x: 56, y: 72 };
       }
       //bottom of map
       else {
         creep.squad = creep.x == myTower!.x - 4 ? "north" : "south";
         corner = 91;
-        rally = { x: 33, y: 26 };
+        firstrally = { x: 33, y: 26 };
       }
+      rally = firstrally;
       if (creep.id === firsthealer.id) creep.isBaseHealer = true;
       else creep.isBaseHealer = false;
     }
@@ -144,7 +154,7 @@ function meleeAttacker(creep: Creep) {
     .filter(i => getDistance(i, creep.initialPos) < huntDistance)
     .sort((a, b) => getDistance(a, creep) - getDistance(b, creep));
 
-  let hasDefLeft = creep.body.filter(i => i.type === TOUGH&&i.hits>0).length>1;
+  let hasDefLeft = creep.body.filter(i => i.type === TOUGH && i.hits > 0).length > 1;
   if (hasDefLeft) {
     if (targets.length > 0) {
       creep.moveTo(targets[0]);
@@ -167,14 +177,15 @@ function rangedAttacker(creep: Creep) {
     creep.rangedAttack(targets[0]);
   } else creep.rangedMassAttack();
 
-    if (creep.hits >= creep.hitsMax) creep.moveTo(enemyFlag);
-    else {
-      //if hurt move to my base healer
-      creep.moveTo(myCreeps.filter(c => c.isBaseHealer)[0]);
-      return;
+  if (creep.hits >= creep.hitsMax / 2) {
+    creep.moveTo(rally);
+  } else {
+    //if hurt move to my base healer
+    creep.moveTo(myCreeps.filter(c => c.isBaseHealer)[0]);
+    return;
   }
 
-  const range = 3;
+  const range = 4;
   //const isHealerInRange = myCreeps.filter(c=>c.body.some(i => i.type === HEAL)&&getDistance(c,creep)<2).length>0;
   const enemiesInRange = enemyCreeps.filter(i => getDistance(i, creep) < range);
   if (enemiesInRange.length > 0) {
@@ -182,6 +193,43 @@ function rangedAttacker(creep: Creep) {
   }
 }
 
+function healer(creep: Creep) {
+  //console.log(`h:${creep.id}`)
+
+  if (creep.hits >= creep.hitsMax) {
+    const healTarget = myCreeps.filter(i => getRange(i, creep) <= 3&&i.hits<i.hitsMax).sort((a, b) => a.hits - b.hits)[0];
+
+    if (healTarget) {
+      if (getRange(healTarget, creep) === 1) {
+        creep.heal(healTarget);
+      } else {
+        creep.rangedHeal(healTarget);
+      }
+    }
+  } else creep.heal(creep);
+
+  const range = 3;
+  const enemiesInRange = enemyCreeps.filter(i => getDistance(i, creep) < range);
+  if (enemiesInRange.length > 0) {
+    flee(creep, enemiesInRange, range);
+  } else {
+    creep.moveTo(rally);
+  }
+}
+
+function flee(creep: Creep, targets: Creep[], range: number) {
+  //only the ones that can hurt
+  targets = targets.filter(t => t.body.some(i => i.type === ATTACK || i.type === RANGED_ATTACK));
+  const result = searchPath(
+    creep,
+    targets.map(i => ({ pos: i, range })),
+    { flee: true }
+  );
+  if (result.path.length > 0) {
+    const direction = getDirection(result.path[0].x - creep.x, result.path[0].y - creep.y);
+    creep.move(direction);
+  }
+}
 //stays at home to heal units
 function baseHealer(creep: Creep) {
   const healTargets = myCreeps
@@ -195,45 +243,9 @@ function baseHealer(creep: Creep) {
       creep.rangedHeal(healTargets[0]);
     }
   }
-  if (myFlag) creep.moveTo(myFlag);
-}
-
-function healer(creep: Creep) {
-  //console.log(`h:${creep.id}`)
-
-  const targets = myCreeps.filter(i => i !== creep && i.hits < i.hitsMax).sort((a, b) => a.hits - b.hits);
-
-  if (targets.length) {
-    creep.moveTo(targets[0]);
-  } else {
-    creep.moveTo(enemyFlag);
-  }
-
-  const healTargets = myCreeps.filter(i => getRange(i, creep) <= 3).sort((a, b) => a.hits - b.hits);
-
-  if (healTargets.length > 0) {
-    if (getRange(healTargets[0], creep) === 1) {
-      creep.heal(healTargets[0]);
-    } else {
-      creep.rangedHeal(healTargets[0]);
-    }
-  }
-
-  const range = 4;
-  const enemiesInRange = enemyCreeps.filter(i => getDistance(i, creep) < range);
-  if (enemiesInRange.length > 0) {
-    flee(creep, enemiesInRange, range);
-  }
-}
-
-function flee(creep: Creep, targets: RoomObject[], range: number) {
-  const result = searchPath(
-    creep,
-    targets.map(i => ({ pos: i, range })),
-    { flee: true }
-  );
-  if (result.path.length > 0) {
-    const direction = getDirection(result.path[0].x - creep.x, result.path[0].y - creep.y);
-    creep.move(direction);
+  if (!isEnemyOutOfRangedUnits) creep.moveTo(myFlag);
+  else {
+    creep.moveTo(firstrally);
+    console.log(`moving mobile command center.... to (${firstrally.x},${firstrally.y})`);
   }
 }
