@@ -2,6 +2,8 @@ declare module "game/prototypes" {
   import { AnyCreep, ScreepsReturnCode } from "game/constants";
   export type STRUCTURE_TOWER = "tower";
   export interface StructureTower extends OwnedStructure<STRUCTURE_TOWER> {
+    pos: RoomPosition;
+    findClosestByRange: any;
     /**
      * The current amount of hit points of the tower.
      */

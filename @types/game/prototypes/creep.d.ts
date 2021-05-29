@@ -2,6 +2,8 @@ import { BodyPartConstant, CreepMoveReturnCode, DirectionConstant } from "game/c
 
 declare module "game/prototypes" {
   export interface Creep extends RoomObject {
+    isBaseHealer: boolean;
+    squad: "north"|"south";
     readonly prototype: Creep;
     /**
      * The current amount of hit points of the creep.
