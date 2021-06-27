@@ -43,9 +43,11 @@ loss due to units not concentrated when moving to rally - break into squads
 declare module "game/prototypes" {
   interface Creep {
     initialPos: RoomPosition;
+    sgt: boolean;
+    isBaseHealer: boolean;
+    squad: number;
   }
 }
-
 // You can also import your files like this:
 // import {roleAttacker} from './roles/attacker.mjs';
 
@@ -61,6 +63,8 @@ let isEnemyOutOfRangedUnits: boolean = false;
 let corner: number; //the corner of avail able square eg 9 or 81 for (9,9) or (81,81)
 let firstrally: { x: number; y: number }; //enemy side of map
 let rally: { x: number; y: number };
+//only 2 squds will be created
+let squads: Creep[][] = [[],[]];
 let atkTime = 1700;
 // This is the only exported function from the main module. It is called every tick.
 export function loop(): void {
@@ -77,65 +81,51 @@ export function loop(): void {
 
   if (myTower) {
     let clo: Creep | undefined = myTower.findClosestByRange(enemyCreeps);
-    let mine: Creep | undefined = myTower.findClosestByRange(myCreeps);
+    let mine: Creep | undefined = myTower.findClosestByRange(myCreeps.filter(x=>x.hits<x.hitsMax));
 
     //let isHalfEnergy = myTower.store.energy > myTower.store.getCapacity() / 2;
     if (clo && getDistance(clo, myTower) <= 12) {
       myTower.attack(clo);
     }
-    //doesnt work because towers dont have .pos????????
-    // else if (clo && getDistance(clo.pos,myTower.pos) <= 10) {
-    //   console.log(`kamahamahaaaaa!!!!`);
-    //   myTower.attack(clo);
-    // }
     else if (mine && isEnemyOutOfRangedUnits) {
       myTower.heal(mine);
     }
   }
-  // Notice how getTime is a global function, but not Game.time anymore
-  // if (getTime() % 10 === 0) {
-  //   let north = myCreeps.filter(c => c.squad === "north");
-  //   let northheal = north.filter(c => c.body.some(i => i.type === HEAL));
-  //   let south = myCreeps.filter(c => c.squad === "south");
-  //   let southheal = south.filter(c => c.body.some(i => i.type === HEAL));
-  //   console.log(
-  //     `status: ${myCreeps.length} creeps. North h:${northheal.length}/${north.length} South h:${southheal.length}/${south.length}`
-  //   );
-  // }
 
   //if at least half creeps at rally with FULL HEALTH
   //or the enemy is out of ranged units (in case rally point is a rock)
   //or 300 ticks left in match
   let readyToAtk = firstrally ? myCreeps.filter(c => c.hits >= c.hitsMax && getDistance(c, firstrally) < 2).length : 0;
-  let atkUnits = (myCreeps.length - 3) / 2;//subtract melee guys and basehealer
+  let atkUnits = (myCreeps.length - 3) / 2; //subtract melee guys and basehealer
+
   if (isEnemyOutOfRangedUnits || readyToAtk > atkUnits || getTime() > atkTime) {
     rally = { x: enemyFlag.x, y: enemyFlag.y };
     console.log(`CHARGE!!!! to ${JSON.stringify(rally)} at ${getTime()}`);
   }
   //else if (getTime() % 10 == 0) console.log(`waiting for forces: ${readyToAtk} out of ${myCreeps.length / 2} needed`);
 
-  let firsthealer = myCreeps.filter(creep => creep.body.some(i => i.type === HEAL))[0];
-  // Run all my creeps according to their bodies
-  myCreeps.forEach(creep => {
+  myCreeps.forEach((creep: Creep) => {
     //initial setup
     // Here is the alternative to the creep "memory" from Screeps World.
     //All game objects are persistent. You can assign any property to it once,
     //and it will be available during the entire match.
     if (!creep.initialPos) {
+      creep.squad = setSquad(creep);
       creep.initialPos = { x: creep.x, y: creep.y };
       if (myTower!.x == 4) {
-        creep.squad = creep.x == myTower!.x + 4 ? "north" : "south";
         corner = 8;
         firstrally = { x: 56, y: 72 };
       }
       //bottom of map
       else {
-        creep.squad = creep.x == myTower!.x - 4 ? "north" : "south";
         corner = 91;
         firstrally = { x: 33, y: 26 };
       }
       rally = firstrally;
-      if (creep.id === firsthealer.id) creep.isBaseHealer = true;
+
+      //set base healer
+      if (creep.squad === 99 && creep.body.some(i => i.type === HEAL))
+        creep.isBaseHealer = true;
       else creep.isBaseHealer = false;
     }
     //end initial setup
@@ -151,6 +141,30 @@ export function loop(): void {
       else healer(creep);
     }
   });
+}
+
+//figures out which "class" the unit is in
+//assigns it to a squad (based on how many empty arrays there are in "squads")
+//returns the number of the squad
+//4 ranged, 1 healer per squad- with 2 melee and one healer as squad "99" at base
+function setSquad(creep: Creep): number {
+  let specialpart = creep.body.some(i => i.type === HEAL) ? HEAL : creep.body.some(i => i.type === RANGED_ATTACK)?RANGED_ATTACK:ATTACK;
+  //leaves 2 melee and two healers at base
+  let squadComp={"heal":2,"attack":0,"ranged_attack":3}
+
+  let idx=0;
+  for(let s of squads){
+    let maxAmt=squadComp[specialpart]
+    if (s.filter(a => a.body.some(i => i.type === specialpart)).length < maxAmt) {
+      s.push(creep);
+      console.log(`added creep: ${specialpart} id: ${creep.id} to squad: ${idx}`)
+      return idx;
+    }
+    idx+=1
+  }
+  console.log(squads)
+
+  return 99;
 }
 
 function meleeAttacker(creep: Creep) {
@@ -220,11 +234,13 @@ function healer(creep: Creep) {
   } else creep.heal(creep);
 
   const range = 3;
+
+  //only dangerous enemies
   const enemiesInRange = enemyCreeps.filter(
-    i => getDistance(i, creep) < range && i.body.some(i => i.type === RANGED_ATTACK || i.type === ATTACK)
+    i => getDistance(i, creep) < range && i.body.some(i => (i.type === RANGED_ATTACK || i.type === ATTACK)&&i.hits>0)
   );
   //only allowed to flee if not in final time
-  if (enemiesInRange.length > 0&&getTime()<atkTime) {
+  if (enemiesInRange.length > 0 && getTime() < atkTime) {
     flee(creep, enemiesInRange, range);
   } else {
     creep.moveTo(rally);
@@ -233,7 +249,9 @@ function healer(creep: Creep) {
 
 function flee(creep: Creep, targets: Creep[], range: number) {
   //only the ones that can hurt
-  targets = targets.filter(t => t.body.some(i => (i.type === ATTACK&&i.hits>0) || (i.type === RANGED_ATTACK&&i.hits>0)));
+  targets = targets.filter(t =>
+    t.body.some(i => (i.type === ATTACK && i.hits > 0) || (i.type === RANGED_ATTACK && i.hits > 0))
+  );
   if (targets) {
     const result = searchPath(
       creep,
